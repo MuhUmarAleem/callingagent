@@ -514,3 +514,81 @@ class TestMultipleToolCalls:
         assert results[0]["result"] == "OK"
         assert results[1]["toolCallId"] == "tc-002"
         assert results[1]["result"].startswith("WAIT:")
+
+
+class TestBundledToolFormat:
+    def test_tool_with_tool_call_list(self, client):
+        body = {
+            "message": {
+                "type": "tool-calls",
+                "call": {"id": "call-bundled"},
+                "toolWithToolCallList": [
+                    {
+                        "type": "function",
+                        "name": "validate_field",
+                        "toolCall": {
+                            "id": "toolu_abc",
+                            "type": "function",
+                            "function": {
+                                "name": "validate_field",
+                                "parameters": {"field": "first_name", "value": "Alice"},
+                            },
+                        },
+                    }
+                ],
+            }
+        }
+        resp = client.post("/vapi/tools", json=body, headers=VAPI_HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["results"][0]["result"] == "OK"
+        assert resp.json()["results"][0]["toolCallId"] == "toolu_abc"
+
+
+class TestDraftAutoSave:
+    def test_core_fields_create_patient(self, client):
+        call_id = "call-autosave"
+        fields = [
+            ("first_name", "Maya"),
+            ("last_name", "Chen"),
+            ("date_of_birth", "03/22/1992"),
+            ("sex", "female"),
+            ("phone_number", "5552223344"),
+        ]
+        last = None
+        for field, value in fields:
+            last = client.post(
+                "/vapi/tools",
+                json=vapi_request("validate_field", {"field": field, "value": value}, call_id=call_id),
+                headers=VAPI_HEADERS,
+            )
+        assert last is not None
+        assert "SUCCESS" in last.json()["results"][0]["result"]
+        assert any(p["phone_number"] == "5552223344" for p in store.list_all())
+
+    def test_end_of_call_on_tools_saves_draft(self, client):
+        call_id = "call-eoc"
+        for field, value in [
+            ("first_name", "Omar"),
+            ("last_name", "Ali"),
+            ("date_of_birth", "1991-04-10"),
+            ("sex", "male"),
+        ]:
+            client.post(
+                "/vapi/tools",
+                json=vapi_request("validate_field", {"field": field, "value": value}, call_id=call_id),
+                headers=VAPI_HEADERS,
+            )
+        store.merge_draft(call_id, {"phone_number": "5553334455"})
+        resp = client.post(
+            "/vapi/tools",
+            json={
+                "message": {
+                    "type": "end-of-call-report",
+                    "call": {"id": call_id},
+                    "artifact": {"transcript": "done"},
+                }
+            },
+            headers=VAPI_HEADERS,
+        )
+        assert resp.status_code == 200
+        assert any(p["phone_number"] == "5553334455" for p in store.list_all())

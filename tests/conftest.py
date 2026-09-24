@@ -25,9 +25,20 @@ class FakeStore:
 
     def __init__(self):
         self.patients: Dict[str, Dict[str, Any]] = {}
+        self.drafts: Dict[str, Dict[str, Any]] = {}
 
     def reset(self):
         self.patients.clear()
+        self.drafts.clear()
+
+    def get_draft(self, call_id: str) -> Dict[str, Any]:
+        return dict(self.drafts.get(call_id) or {})
+
+    def merge_draft(self, call_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+        current = self.get_draft(call_id)
+        current.update(fields)
+        self.drafts[call_id] = current
+        return dict(current)
 
     def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
         pid = data.get("patient_id") or str(uuid.uuid4())
@@ -166,6 +177,8 @@ def client():
         patch("app.routers.vapi.update_patient", side_effect=lambda db, pid, data: store.update(pid, data)),
         patch("app.routers.vapi.upsert_call_log", side_effect=_noop),
         patch("app.routers.vapi.phone_exists_for_different_patient", side_effect=lambda db, phone, pid: store.phone_conflict(phone, pid)),
+        patch("app.routers.vapi.get_call_draft", side_effect=lambda db, cid: store.get_draft(cid)),
+        patch("app.routers.vapi.merge_call_draft", side_effect=lambda db, cid, fields: store.merge_draft(cid, fields)),
     ]
 
     with ExitStack() as stack:

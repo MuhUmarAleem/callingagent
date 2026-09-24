@@ -34,6 +34,8 @@ https://<YOUR_PUBLIC_URL>/vapi/webhook
 
 Use the same `x-vapi-secret` header.
 
+If you only set the assistant **Server URL** to `/vapi/tools`, that is enough now — the tools endpoint also stores the end-of-call report and will save the patient once name, date of birth, sex, and a 10-digit phone number have been collected.
+
 ---
 
 ## Tool Definitions

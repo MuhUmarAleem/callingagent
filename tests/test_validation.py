@@ -186,6 +186,10 @@ class TestState:
     def test_dc(self):
         assert validate_state("DC") == "DC"
 
+    def test_not_provided_na(self):
+        assert validate_state("NA") == "NA"
+        assert validate_state("not provided") == "NA"
+
     def test_invalid_state(self):
         with pytest.raises(ValueError, match="state"):
             validate_state("XX")

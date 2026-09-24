@@ -60,4 +60,11 @@ SCHEMA_STATEMENTS = [
         created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS public.call_drafts (
+        call_id    TEXT PRIMARY KEY,
+        fields     JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
 ]

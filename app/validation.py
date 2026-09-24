@@ -33,9 +33,10 @@ US_STATES: Dict[str, str] = {
     "vermont": "VT", "virginia": "VA", "washington": "WA",
     "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
     "district of columbia": "DC", "washington dc": "DC", "washington d.c.": "DC",
+    "n/a": "NA", "na": "NA", "unknown": "NA", "not provided": "NA",
 }
 
-VALID_STATE_CODES = set(US_STATES.values())
+VALID_STATE_CODES = set(US_STATES.values()) | {"NA"}
 
 SEX_MAP = {
     "male": "Male", "m": "Male",

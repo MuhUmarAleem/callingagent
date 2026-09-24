@@ -37,7 +37,16 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.db import get_db
-from app.services import find_by_phone, create_patient, get_patient, update_patient, upsert_call_log, phone_exists_for_different_patient
+from app.services import (
+    create_patient,
+    find_by_phone,
+    get_call_draft,
+    get_patient,
+    merge_call_draft,
+    phone_exists_for_different_patient,
+    update_patient,
+    upsert_call_log,
+)
 from app.validation import validate_field, validate_patient, validate_phone_number
 
 logger = logging.getLogger(__name__)
@@ -98,33 +107,81 @@ def _parse_arguments(raw: Any) -> Dict[str, Any]:
     return {}
 
 
+def _normalize_tool_name(name: str) -> str:
+    key = re.sub(r"[^a-z0-9]", "", (name or "").lower())
+    return {
+        "validatefield": "validate_field",
+        "lookupbyphone": "lookup_by_phone",
+        "savepatient": "save_patient",
+        "updatepatient": "update_patient",
+    }.get(key, name)
+
+
+def _normalize_one_tool(item: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+    nested = item.get("toolCall")
+    if isinstance(nested, dict):
+        item = nested
+    func = item.get("function") if isinstance(item.get("function"), dict) else {}
+    name = func.get("name") or item.get("name") or ""
+    raw_args = (
+        func.get("arguments")
+        or func.get("parameters")
+        or item.get("arguments")
+        or item.get("parameters")
+        or {}
+    )
+    if not name:
+        return None
+    return {
+        "id": item.get("id") or func.get("id") or "",
+        "name": _normalize_tool_name(str(name)),
+        "arguments": _parse_arguments(raw_args),
+    }
+
+
 def _extract_tool_calls(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Extract tool calls from the Vapi message body.
-    Supports both toolCallList and toolCalls keys.
-    Each item is normalized to: {"id": "...", "name": "...", "arguments": {...}}
+    Extract tool calls from every Vapi payload shape we have seen:
+    toolCallList, toolCalls, toolWithToolCallList, functionCall.
     """
-    raw_calls = message.get("toolCallList") or message.get("toolCalls") or []
+    raw_calls: List[Any] = []
+    for key in ("toolCallList", "toolCalls"):
+        value = message.get(key)
+        if isinstance(value, list) and value:
+            raw_calls = value
+            break
+
+    if not raw_calls:
+        bundled = message.get("toolWithToolCallList")
+        if isinstance(bundled, list):
+            raw_calls = bundled
+
+    if not raw_calls:
+        singular = message.get("functionCall") or message.get("toolCall")
+        if isinstance(singular, dict):
+            raw_calls = [singular]
+
+    artifact = message.get("artifact")
+    if not raw_calls and isinstance(artifact, dict):
+        for key in ("toolCallList", "toolCalls"):
+            value = artifact.get(key)
+            if isinstance(value, list) and value:
+                raw_calls = value
+                break
+
     normalized = []
-
+    seen = set()
     for item in raw_calls:
-        # Both formats use id at the top level
-        call_id = item.get("id", "")
-
-        # Function info can be at top level or nested under "function"
-        func = item.get("function", {})
-        name = func.get("name") or item.get("name", "")
-        raw_args = (
-            func.get("arguments")
-            or func.get("parameters")
-            or item.get("arguments")
-            or item.get("parameters")
-            or {}
-        )
-        arguments = _parse_arguments(raw_args)
-
-        normalized.append({"id": call_id, "name": name, "arguments": arguments})
-
+        parsed = _normalize_one_tool(item)
+        if not parsed:
+            continue
+        marker = (parsed["id"], parsed["name"], json.dumps(parsed["arguments"], sort_keys=True, default=str))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        normalized.append(parsed)
     return normalized
 
 
@@ -177,7 +234,86 @@ def _wait_for_full_phone(value: Any) -> Optional[str]:
     return None
 
 
-def _tool_validate_field(args: Dict[str, Any]) -> str:
+CORE_VOICE_FIELDS = ("first_name", "last_name", "date_of_birth", "sex", "phone_number")
+VOICE_DEFAULTS = {
+    "address_line_1": "Not provided",
+    "city": "Unknown",
+    "state": "NA",
+    "zip_code": "00000",
+}
+
+
+def _jsonable(value: Any) -> Any:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
+def _persist_clean_patient(db, clean: Dict[str, Any], call_id: Optional[str]) -> str:
+    existing = find_by_phone(db, clean["phone_number"])
+    if existing:
+        same_person = (
+            existing["first_name"].lower() == clean["first_name"].lower()
+            and existing["last_name"].lower() == clean["last_name"].lower()
+            and str(existing["date_of_birth"]) == (
+                clean["date_of_birth"].isoformat()
+                if hasattr(clean["date_of_birth"], "isoformat")
+                else str(clean["date_of_birth"])
+            )
+        )
+        if same_person:
+            if call_id:
+                upsert_call_log(db, call_id, patient_id=existing["patient_id"])
+            return (
+                f"SUCCESS: already saved. patient_id={existing['patient_id']}; "
+                f"first_name={existing['first_name']}"
+            )
+        return (
+            f"ERROR_DUPLICATE: a record already exists for this phone number "
+            f"for {existing['first_name']} {existing['last_name']}"
+        )
+
+    patient = create_patient(db, clean)
+    if call_id:
+        upsert_call_log(db, call_id, patient_id=patient["patient_id"])
+    logger.info(
+        "save_patient success patient_id=%s payload=%s",
+        patient["patient_id"],
+        json.dumps(_masked_payload(clean), default=str),
+    )
+    return f"SUCCESS: saved. patient_id={patient['patient_id']}; first_name={patient['first_name']}"
+
+
+def _try_finalize_draft(call_id: Optional[str]) -> Optional[str]:
+    """Save a patient once the call has name, DOB, sex, and phone."""
+    if not call_id:
+        return None
+    with get_db() as db:
+        draft = get_call_draft(db, call_id)
+        if not all(draft.get(field) for field in CORE_VOICE_FIELDS):
+            return None
+        payload = {**VOICE_DEFAULTS, **{k: v for k, v in draft.items() if v not in (None, "")}}
+        clean, errors = validate_patient(payload)
+        if errors:
+            logger.info("draft incomplete call_id=%s missing=%s", call_id, list(errors.keys()))
+            return None
+        try:
+            return _persist_clean_patient(db, clean, call_id)
+        except Exception as exc:
+            logger.error("finalize draft failed call_id=%s: %s", call_id, exc)
+            return None
+
+
+def _remember_fields(call_id: Optional[str], fields: Dict[str, Any]) -> Optional[str]:
+    if not call_id or not fields:
+        return None
+    serializable = {k: _jsonable(v) for k, v in fields.items() if v is not None}
+    with get_db() as db:
+        merge_call_draft(db, call_id, serializable)
+    return _try_finalize_draft(call_id)
+
+
+def _tool_validate_field(args: Dict[str, Any], call_id: Optional[str] = None) -> str:
     field = args.get("field", "").strip()
     value = args.get("value")
 
@@ -190,12 +326,16 @@ def _tool_validate_field(args: Dict[str, Any]) -> str:
             return waiting
 
     try:
-        validate_field(field, value)
-        return "OK"
+        normalized = validate_field(field, value)
     except KeyError:
         return f"INVALID: I don't know the field '{field}'."
     except ValueError as e:
         return f"INVALID: {e}"
+
+    saved = _remember_fields(call_id, {field: normalized})
+    if saved and saved.startswith("SUCCESS"):
+        return f"OK. {saved}"
+    return "OK"
 
 
 def _tool_lookup_by_phone(args: Dict[str, Any]) -> str:
@@ -226,47 +366,20 @@ def _tool_save_patient(args: Dict[str, Any], call_id: Optional[str]) -> str:
     clean, errors = validate_patient(args, partial=False)
 
     if errors:
-        # Return the first error so the agent re-asks one thing at a time
+        # Keep collecting; a later finalize can still save core identity fields.
+        _remember_fields(call_id, {k: v for k, v in args.items() if v not in (None, "")})
         first_field, first_msg = next(iter(errors.items()))
         return f"ERROR_FIELD: {first_field} - {first_msg}"
 
-    # Check for existing patient with same phone
     for attempt in range(2):
         try:
             with get_db() as db:
-                existing = find_by_phone(db, clean["phone_number"])
-
-                if existing:
-                    # Same person? Check name + DOB
-                    same_person = (
-                        existing["first_name"].lower() == clean["first_name"].lower()
-                        and existing["last_name"].lower() == clean["last_name"].lower()
-                        and existing["date_of_birth"] == clean["date_of_birth"].isoformat()
-                    )
-                    if same_person:
-                        # Link call to existing patient
-                        if call_id:
-                            upsert_call_log(db, call_id, patient_id=existing["patient_id"])
-                        return f"SUCCESS: already saved. patient_id={existing['patient_id']}; first_name={existing['first_name']}"
-                    else:
-                        return (
-                            f"ERROR_DUPLICATE: a record already exists for this phone number "
-                            f"for {existing['first_name']} {existing['last_name']}"
-                        )
-
-                patient = create_patient(db, clean)
-
-                # Link call log to new patient
-                if call_id:
-                    upsert_call_log(db, call_id, patient_id=patient["patient_id"])
-
-            logger.info(
-                "save_patient success patient_id=%s payload=%s",
-                patient["patient_id"],
-                json.dumps(_masked_payload(clean), default=str),
-            )
-            return f"SUCCESS: saved. patient_id={patient['patient_id']}; first_name={patient['first_name']}"
-
+                merge_call_draft(
+                    db,
+                    call_id or "",
+                    {k: _jsonable(v) for k, v in clean.items()},
+                )
+                return _persist_clean_patient(db, clean, call_id)
         except Exception as exc:
             logger.warning("save_patient attempt %d failed: %s", attempt + 1, exc)
             if attempt == 0:
@@ -329,7 +442,7 @@ def _tool_update_patient(args: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 TOOL_HANDLERS = {
-    "validate_field": lambda args, call_id: _tool_validate_field(args),
+    "validate_field": _tool_validate_field,
     "lookup_by_phone": lambda args, call_id: _tool_lookup_by_phone(args),
     "save_patient": _tool_save_patient,
     "update_patient": lambda args, call_id: _tool_update_patient(args),
@@ -383,14 +496,33 @@ async def vapi_tools(
     except Exception:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    message = body.get("message", {})
+    message = body.get("message") if isinstance(body.get("message"), dict) else body
+    if not isinstance(message, dict):
+        message = {}
+
+    msg_type = message.get("type", "")
     call_info = message.get("call", {})
-    call_id = call_info.get("id") if isinstance(call_info, dict) else None
+    call_id = call_info.get("id") if isinstance(call_info, dict) else message.get("callId")
+
+    if msg_type == "end-of-call-report":
+        _store_end_of_call(message)
+        saved = _try_finalize_draft(call_id)
+        logger.info("end-of-call via tools call_id=%s saved=%s", call_id, bool(saved))
+        return JSONResponse({"results": [], "received": True})
 
     tool_calls = _extract_tool_calls(message)
+    if not tool_calls:
+        tool_calls = _extract_tool_calls(body if isinstance(body, dict) else {})
+
+    logger.info(
+        "vapi_tools type=%s tools=%s call_id=%s keys=%s",
+        msg_type or "unknown",
+        [tc["name"] for tc in tool_calls] or ["none"],
+        call_id,
+        list(message.keys())[:12],
+    )
 
     if not tool_calls:
-        # Not a tool-calls message type — return empty results
         return JSONResponse({"results": []})
 
     results = []
@@ -420,6 +552,27 @@ async def vapi_tools(
     return JSONResponse({"results": results})
 
 
+def _store_end_of_call(message: Dict[str, Any]) -> Optional[str]:
+    call_obj = message.get("call", {})
+    call_id = call_obj.get("id") if isinstance(call_obj, dict) else message.get("callId")
+    artifact = message.get("artifact", {}) or {}
+    transcript = artifact.get("transcript") or message.get("transcript")
+    analysis = message.get("analysis", {}) or {}
+    summary = analysis.get("summary") or message.get("summary")
+    if call_id:
+        with get_db() as db:
+            upsert_call_log(
+                db,
+                call_id=call_id,
+                transcript=transcript,
+                summary=summary,
+            )
+        logger.info("end-of-call-report stored call_id=%s", call_id)
+    else:
+        logger.warning("end-of-call-report missing call id, skipping")
+    return call_id
+
+
 # ---------------------------------------------------------------------------
 # POST /vapi/webhook  (P1: end-of-call-report)
 # ---------------------------------------------------------------------------
@@ -446,44 +599,12 @@ async def vapi_webhook(
         return JSONResponse({"received": True})
 
     try:
-        message = body.get("message", {})
-        msg_type = message.get("type", "")
-
-        if msg_type == "end-of-call-report":
-            # Extract call ID — Vapi nests it inside message.call.id
-            call_obj = message.get("call", {})
-            call_id = (
-                call_obj.get("id")
-                if isinstance(call_obj, dict)
-                else message.get("callId")
-            )
-
-            # Transcript: message.artifact.transcript (string) or message.transcript
-            artifact = message.get("artifact", {}) or {}
-            transcript = (
-                artifact.get("transcript")
-                or message.get("transcript")
-            )
-
-            # Summary: message.analysis.summary or message.summary
-            analysis = message.get("analysis", {}) or {}
-            summary = (
-                analysis.get("summary")
-                or message.get("summary")
-            )
-
-            if call_id:
-                with get_db() as db:
-                    upsert_call_log(
-                        db,
-                        call_id=call_id,
-                        transcript=transcript,
-                        summary=summary,
-                    )
-                logger.info("end-of-call-report stored call_id=%s", call_id)
-            else:
-                logger.warning("end-of-call-report missing call id, skipping")
-
+        message = body.get("message") if isinstance(body.get("message"), dict) else body
+        if not isinstance(message, dict):
+            message = {}
+        if message.get("type") == "end-of-call-report":
+            call_id = _store_end_of_call(message)
+            _try_finalize_draft(call_id)
     except Exception as exc:
         logger.error("vapi_webhook processing error: %s", exc)
 

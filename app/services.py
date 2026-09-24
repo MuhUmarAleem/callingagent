@@ -4,6 +4,7 @@ Service layer — all database operations.
 Used by both routers so there's a single source of truth for business logic.
 All functions accept a SQLAlchemy Session and use raw SQL via sqlalchemy.text().
 """
+import json
 import logging
 import uuid
 from datetime import date, datetime, timezone
@@ -222,6 +223,63 @@ def list_call_logs(db: Session) -> List[Dict[str, Any]]:
     """)
     rows = db.execute(sql).fetchall()
     return [_row_to_dict(r) for r in rows]
+
+
+def _ensure_call_drafts(db: Session) -> None:
+    db.execute(text("""
+        CREATE TABLE IF NOT EXISTS public.call_drafts (
+            call_id    TEXT PRIMARY KEY,
+            fields     JSONB NOT NULL DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """))
+
+
+def get_call_draft(db: Session, call_id: str) -> Dict[str, Any]:
+    """Return accumulated voice-call fields for this call, or {}."""
+    if not call_id:
+        return {}
+    try:
+        _ensure_call_drafts(db)
+        row = db.execute(
+            text("SELECT fields FROM public.call_drafts WHERE call_id = :call_id"),
+            {"call_id": call_id},
+        ).fetchone()
+    except Exception as exc:
+        logger.warning("get_call_draft failed call_id=%s: %s", call_id, exc)
+        return {}
+    if row is None:
+        return {}
+    fields = row._mapping["fields"]
+    if isinstance(fields, str):
+        try:
+            fields = json.loads(fields)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return dict(fields or {})
+
+
+def merge_call_draft(db: Session, call_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge newly validated fields into the call draft and return the full draft."""
+    if not call_id or not fields:
+        return get_call_draft(db, call_id)
+    merged = {**get_call_draft(db, call_id), **fields}
+    payload = json.dumps(merged, default=str)
+    try:
+        _ensure_call_drafts(db)
+        db.execute(
+            text("""
+                INSERT INTO public.call_drafts (call_id, fields, updated_at)
+                VALUES (:call_id, CAST(:fields AS jsonb), now())
+                ON CONFLICT (call_id) DO UPDATE SET
+                    fields = CAST(:fields AS jsonb),
+                    updated_at = now()
+            """),
+            {"call_id": call_id, "fields": payload},
+        )
+    except Exception as exc:
+        logger.warning("merge_call_draft failed call_id=%s: %s", call_id, exc)
+    return merged
 
 
 def get_dashboard_stats(db: Session) -> Dict[str, int]:
