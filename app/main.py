@@ -5,6 +5,7 @@ Assembles the FastAPI app, registers routers, and installs global
 exception handlers that always return the standard error envelope.
 """
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, status
@@ -25,6 +26,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.db import init_schema
+    init_schema()
+    yield
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Patient Registration API",
@@ -32,6 +40,7 @@ def create_app() -> FastAPI:
         version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
 
     # ----- Exception handlers -----

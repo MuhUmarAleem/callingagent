@@ -10,13 +10,16 @@ Key design decisions:
   which does not support PostgreSQL prepared statements.
 """
 import logging
+import os
 from contextlib import contextmanager
 from typing import Generator
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
+from app.schema import SCHEMA_STATEMENTS
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +40,18 @@ def _get_engine():
         # Disable prepared statements for Supabase transaction pooler (PgBouncer)
         connect_args["prepare_threshold"] = None
 
-        _engine = create_engine(
-            url,
-            pool_pre_ping=True,
-            pool_size=3,
-            max_overflow=2,
-            connect_args=connect_args,
-        )
+        engine_kwargs = {
+            "pool_pre_ping": True,
+            "connect_args": connect_args,
+        }
+        # Vercel Functions should not hold a connection pool across invocations.
+        if os.environ.get("VERCEL") == "1":
+            engine_kwargs["poolclass"] = NullPool
+        else:
+            engine_kwargs["pool_size"] = 3
+            engine_kwargs["max_overflow"] = 2
+
+        _engine = create_engine(url, **engine_kwargs)
         _SessionLocal = sessionmaker(bind=_engine, autocommit=False, autoflush=False)
 
     return _engine, _SessionLocal
@@ -73,4 +81,18 @@ def check_db_health() -> bool:
         return True
     except Exception as exc:
         logger.warning("DB health check failed: %s", exc)
+        return False
+
+
+def init_schema() -> bool:
+    """Create patients/call_logs tables if they do not exist. Safe to call on every boot."""
+    try:
+        engine, _ = _get_engine()
+        with engine.begin() as conn:
+            for stmt in SCHEMA_STATEMENTS:
+                conn.execute(text(stmt))
+        logger.info("Database schema is ready.")
+        return True
+    except Exception as exc:
+        logger.warning("Schema init failed: %s", exc)
         return False

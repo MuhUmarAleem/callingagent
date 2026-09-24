@@ -10,9 +10,15 @@ https://<YOUR_PUBLIC_URL>/vapi/tools
 
 Set a **generous timeout** — recommended: **20 seconds** (registration can take a moment to validate and write to the database).
 
-## Step 2: Set the Secret Header
+## Step 2: Set the Secret
 
-In your Vapi assistant settings → **Server URL Headers**, add:
+Use **either** of these. The backend accepts both.
+
+**Option A — Vapi Server URL Secret (Bearer token):**
+Set the assistant **Server URL Secret** to the same value as `VAPI_SHARED_SECRET`.
+Vapi sends `Authorization: Bearer <secret>`.
+
+**Option B — Custom header:**
 
 | Header Name      | Header Value                        |
 |------------------|-------------------------------------|

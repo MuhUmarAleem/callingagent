@@ -135,6 +135,7 @@ def client():
         # DB helpers
         patch("app.db.get_db", _fake_get_db),
         patch("app.db.check_db_health", return_value=True),
+        patch("app.db.init_schema", return_value=True),
         # app.services — canonical definitions
         patch("app.services.create_patient", side_effect=lambda db, data: store.create(data)),
         patch("app.services.get_patient", side_effect=lambda db, pid: store.get(pid)),
@@ -144,6 +145,8 @@ def client():
         patch("app.services.find_by_phone", side_effect=lambda db, phone: store.find_by_phone(phone)),
         patch("app.services.phone_exists_for_different_patient", side_effect=lambda db, phone, pid: store.phone_conflict(phone, pid)),
         patch("app.services.upsert_call_log", side_effect=_noop),
+        patch("app.services.list_call_logs", side_effect=lambda db: []),
+        patch("app.services.get_dashboard_stats", side_effect=lambda db: {"patients": 0, "call_logs": 0}),
         # app.routers.patients — imported names
         patch("app.routers.patients.get_db", _fake_get_db),
         patch("app.routers.patients.create_patient", side_effect=lambda db, data: store.create(data)),
@@ -153,6 +156,8 @@ def client():
         patch("app.routers.patients.soft_delete_patient", side_effect=lambda db, pid: store.soft_delete(pid)),
         patch("app.routers.patients.find_by_phone", side_effect=lambda db, phone: store.find_by_phone(phone)),
         patch("app.routers.patients.phone_exists_for_different_patient", side_effect=lambda db, phone, pid: store.phone_conflict(phone, pid)),
+        patch("app.routers.patients.list_call_logs", side_effect=lambda db: []),
+        patch("app.routers.patients.get_dashboard_stats", side_effect=lambda db: {"patients": len(store.list_all()), "call_logs": 0}),
         # app.routers.vapi — imported names
         patch("app.routers.vapi.get_db", _fake_get_db),
         patch("app.routers.vapi.find_by_phone", side_effect=lambda db, phone: store.find_by_phone(phone)),

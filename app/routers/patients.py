@@ -20,7 +20,9 @@ from app.db import get_db
 from app.services import (
     create_patient,
     find_by_phone,
+    get_dashboard_stats,
     get_patient,
+    list_call_logs,
     list_patients,
     phone_exists_for_different_patient,
     soft_delete_patient,
@@ -80,12 +82,31 @@ def check_api_key(x_api_key: Optional[str] = Header(default=None)):
 
 @router.get("/health")
 def health_check():
-    """Health check. Verifies DB connectivity."""
+    """Health check. Verifies DB connectivity and returns dashboard counts."""
     from app.db import check_db_health
     db_ok = check_db_health()
-    if db_ok:
-        return ok({"status": "ok", "db": "ok"})
-    return err("db_down", "Database is unreachable.", status_code=503)
+    if not db_ok:
+        return err("db_down", "Database is unreachable.", status_code=503)
+
+    payload = {"status": "ok", "db": "ok", "patients": 0, "call_logs": 0}
+    try:
+        with get_db() as db:
+            payload.update(get_dashboard_stats(db))
+    except Exception as exc:
+        logger.warning("Health stats unavailable: %s", exc)
+    return ok(payload)
+
+
+@router.get("/call-logs")
+def list_call_logs_route():
+    """List stored Vapi call transcripts and summaries."""
+    try:
+        with get_db() as db:
+            logs = list_call_logs(db)
+    except Exception as exc:
+        logger.warning("Failed to list call logs: %s", exc)
+        return err("db_down", "Database is unreachable.", status_code=503)
+    return ok(logs)
 
 
 @router.get("/patients")
@@ -110,8 +131,12 @@ def list_patients_route(
         except ValueError as e:
             return err("bad_filter", f"Invalid phone_number filter: {e}", status_code=400)
 
-    with get_db() as db:
-        patients = list_patients(db, last_name=last_name, date_of_birth=dob_filter, phone_number=phone_filter)
+    try:
+        with get_db() as db:
+            patients = list_patients(db, last_name=last_name, date_of_birth=dob_filter, phone_number=phone_filter)
+    except Exception as exc:
+        logger.warning("Failed to list patients: %s", exc)
+        return err("db_down", "Database is unreachable.", status_code=503)
 
     return ok(patients)
 

@@ -49,6 +49,21 @@ router = APIRouter(prefix="/vapi", tags=["vapi"])
 # ---------------------------------------------------------------------------
 
 
+def _extract_provided_secret(
+    x_vapi_secret: Optional[str],
+    authorization: Optional[str],
+) -> Optional[str]:
+    """Accept either x-vapi-secret or Authorization: Bearer <token> (Vapi default)."""
+    if x_vapi_secret:
+        return x_vapi_secret
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token:
+        return token.strip()
+    return authorization.strip() or None
+
+
 def _check_secret(provided: Optional[str]) -> bool:
     settings = get_settings()
     secret = settings.vapi_shared_secret
@@ -57,7 +72,10 @@ def _check_secret(provided: Optional[str]) -> bool:
         return True
     if not provided:
         return False
-    return hmac.compare_digest(provided, secret)
+    try:
+        return hmac.compare_digest(provided, secret)
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -296,12 +314,16 @@ def _dispatch_tool(name: str, args: Dict[str, Any], call_id: Optional[str]) -> s
 
 
 @router.post("/tools")
-async def vapi_tools(request: Request, x_vapi_secret: Optional[str] = Header(default=None)):
+async def vapi_tools(
+    request: Request,
+    x_vapi_secret: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Handle all Vapi tool-call requests.
     Always returns HTTP 200 with {"results": [...]}.
     """
-    if not _check_secret(x_vapi_secret):
+    if not _check_secret(_extract_provided_secret(x_vapi_secret, authorization)):
         # Return 401 for auth failures (not a tool call error)
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
@@ -353,13 +375,17 @@ async def vapi_tools(request: Request, x_vapi_secret: Optional[str] = Header(def
 
 
 @router.post("/webhook")
-async def vapi_webhook(request: Request, x_vapi_secret: Optional[str] = Header(default=None)):
+async def vapi_webhook(
+    request: Request,
+    x_vapi_secret: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Handle Vapi webhook events.
     Currently processes end-of-call-report to store transcript and summary.
     Always returns 200 immediately.
     """
-    if not _check_secret(x_vapi_secret):
+    if not _check_secret(_extract_provided_secret(x_vapi_secret, authorization)):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     try:

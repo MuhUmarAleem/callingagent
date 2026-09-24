@@ -6,7 +6,9 @@ load_dotenv(override=True)
 
 from sqlalchemy import create_engine, text
 
-url = os.environ.get("DATABASE_URL", "")
+from app.config import normalize_database_url
+
+url = normalize_database_url(os.environ.get("DATABASE_URL", ""))
 if not url:
     print("ERROR: DATABASE_URL not set in .env")
     sys.exit(1)
@@ -23,7 +25,7 @@ engine = create_engine(
 try:
     with engine.connect() as conn:
         row = conn.execute(text("SELECT current_database(), current_user, version()")).fetchone()
-        print("✓ Connection: SUCCESS")
+        print("OK Connection: SUCCESS")
         print(f"  Database : {row[0]}")
         print(f"  User     : {row[1]}")
         print(f"  PG       : {row[2][:70]}")
@@ -53,8 +55,8 @@ try:
             log_cnt = conn.execute(text("SELECT COUNT(*) FROM public.call_logs")).scalar()
             print(f"  Call logs: {log_cnt}")
 
-        print("\n✓ Database is healthy and ready.")
+        print("\nOK Database is healthy and ready.")
 
 except Exception as exc:
-    print(f"\n✗ Connection FAILED: {exc}")
+    print(f"\nFAILED: {exc}")
     sys.exit(1)

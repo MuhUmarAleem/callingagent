@@ -15,6 +15,18 @@ class TestHealth:
         assert body["data"]["db"] == "ok"
 
 
+class TestDashboard:
+    def test_dashboard_served(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Patient Registration" in resp.text
+
+    def test_call_logs_empty(self, client):
+        resp = client.get("/call-logs")
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
+
+
 class TestCreatePatient:
     def test_create_success(self, client):
         resp = client.post("/patients", json=VALID_PATIENT)

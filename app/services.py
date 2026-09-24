@@ -86,26 +86,37 @@ def list_patients(
     List non-deleted patients with optional filters.
     last_name is case-insensitive ILIKE match.
     """
-    conditions = ["deleted_at IS NULL"]
+    conditions = ["p.deleted_at IS NULL"]
     params: Dict[str, Any] = {}
 
     if last_name:
-        conditions.append("lower(last_name) LIKE :last_name")
+        conditions.append("lower(p.last_name) LIKE :last_name")
         params["last_name"] = f"%{last_name.lower()}%"
 
     if date_of_birth:
-        conditions.append("date_of_birth = :dob")
+        conditions.append("p.date_of_birth = :dob")
         params["dob"] = date_of_birth
 
     if phone_number:
-        conditions.append("phone_number = :phone")
+        conditions.append("p.phone_number = :phone")
         params["phone"] = phone_number
 
     where = " AND ".join(conditions)
     sql = text(f"""
-        SELECT * FROM public.patients
+        SELECT p.*,
+               cl.transcript,
+               cl.summary,
+               cl.call_id
+        FROM public.patients p
+        LEFT JOIN LATERAL (
+            SELECT transcript, summary, call_id
+            FROM public.call_logs
+            WHERE patient_id = p.patient_id
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) cl ON TRUE
         WHERE {where}
-        ORDER BY created_at DESC
+        ORDER BY p.created_at DESC
     """)
     rows = db.execute(sql, params).fetchall()
     return [_row_to_dict(r) for r in rows]
@@ -201,3 +212,25 @@ def upsert_call_log(
         })
     except Exception as exc:
         logger.error("Failed to upsert call log call_id=%s: %s", call_id, exc)
+
+
+def list_call_logs(db: Session) -> List[Dict[str, Any]]:
+    """Return all call logs, newest first."""
+    sql = text("""
+        SELECT * FROM public.call_logs
+        ORDER BY created_at DESC
+    """)
+    rows = db.execute(sql).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_dashboard_stats(db: Session) -> Dict[str, int]:
+    """Counts used by the dashboard header."""
+    patients = db.execute(
+        text("SELECT COUNT(*) FROM public.patients WHERE deleted_at IS NULL")
+    ).scalar()
+    call_logs = db.execute(text("SELECT COUNT(*) FROM public.call_logs")).scalar()
+    return {
+        "patients": int(patients or 0),
+        "call_logs": int(call_logs or 0),
+    }

@@ -89,6 +89,22 @@ class TestVapiAuth:
         )
         assert resp.status_code == 200
 
+    def test_bearer_token_accepted(self, client):
+        resp = client.post(
+            "/vapi/tools",
+            json=vapi_request("validate_field", {"field": "first_name", "value": "Alice"}),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert resp.status_code == 200
+
+    def test_wrong_bearer_rejected(self, client):
+        resp = client.post(
+            "/vapi/tools",
+            json=vapi_request("validate_field", {"field": "first_name", "value": "Alice"}),
+            headers={"Authorization": "Bearer WRONG"},
+        )
+        assert resp.status_code == 401
+
 
 class TestValidateFieldTool:
     def test_valid_field_returns_ok(self, client):
@@ -387,6 +403,29 @@ class TestUnknownTool:
             headers=VAPI_HEADERS,
         )
         assert resp.status_code == 200
+
+
+class TestVapiWebhook:
+    def test_end_of_call_report_accepted(self, client):
+        body = {
+            "message": {
+                "type": "end-of-call-report",
+                "call": {"id": "call-abc"},
+                "artifact": {"transcript": "AI: Hello\nUser: Hi"},
+                "analysis": {"summary": "Caller registered as Alice."},
+            }
+        }
+        resp = client.post("/vapi/webhook", json=body, headers=VAPI_HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["received"] is True
+
+    def test_webhook_rejects_wrong_secret(self, client):
+        resp = client.post(
+            "/vapi/webhook",
+            json={"message": {"type": "end-of-call-report", "call": {"id": "x"}}},
+            headers={"x-vapi-secret": "WRONG"},
+        )
+        assert resp.status_code == 401
 
 
 class TestMultipleToolCalls:

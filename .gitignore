@@ -41,6 +41,9 @@ coverage.xml
 *.cover
 .hypothesis/
 
+# Vercel
+.vercel/
+
 # IDE
 .idea/
 .vscode/
@@ -55,3 +58,5 @@ Thumbs.db
 # Logs
 *.log
 logs/
+.vercel
+.env*

@@ -1,0 +1,16 @@
+[project]
+name = "callingagent"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.136.1",
+    "uvicorn[standard]==0.46.0",
+    "pydantic==2.12.3",
+    "pydantic-settings==2.10.1",
+    "sqlalchemy==2.0.52",
+    "psycopg[binary]==3.2.13",
+    "python-dotenv==1.1.0",
+]
+
+[tool.vercel]
+entrypoint = "app.main:app"

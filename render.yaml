@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: callingagent
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: master
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: VAPI_SHARED_SECRET
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
