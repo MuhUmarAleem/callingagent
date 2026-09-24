@@ -27,6 +27,7 @@ Response (always HTTP 200):
 import hmac
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -156,12 +157,37 @@ def _masked_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _phone_digits(value: Any) -> str:
+    """Digits only; drop a leading US country code 1 when 11 digits are present."""
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) == 11 and digits.startswith("1"):
+        return digits[1:]
+    return digits
+
+
+def _wait_for_full_phone(value: Any) -> Optional[str]:
+    """If the caller is still saying digits, tell the assistant to stay silent."""
+    digits = _phone_digits(value)
+    if 1 <= len(digits) < 10:
+        return (
+            f"WAIT: only {len(digits)} of 10 digits so far. "
+            "Stay completely silent. Do not speak and do not tell the caller this is invalid. "
+            "They are still saying the phone number."
+        )
+    return None
+
+
 def _tool_validate_field(args: Dict[str, Any]) -> str:
     field = args.get("field", "").strip()
     value = args.get("value")
 
     if not field:
         return "INVALID: Please provide a field name."
+
+    if field in ("phone_number", "emergency_contact_phone"):
+        waiting = _wait_for_full_phone(value)
+        if waiting:
+            return waiting
 
     try:
         validate_field(field, value)
@@ -174,6 +200,9 @@ def _tool_validate_field(args: Dict[str, Any]) -> str:
 
 def _tool_lookup_by_phone(args: Dict[str, Any]) -> str:
     raw_phone = args.get("phone_number", "")
+    waiting = _wait_for_full_phone(raw_phone)
+    if waiting:
+        return waiting
     try:
         phone = validate_phone_number(raw_phone)
     except ValueError as e:

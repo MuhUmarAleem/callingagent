@@ -158,10 +158,29 @@ class TestValidateFieldTool:
         )
         assert resp.json()["results"][0]["result"] == "OK"
 
-    def test_bad_phone_invalid(self, client):
+    def test_partial_phone_waits(self, client):
         resp = client.post(
             "/vapi/tools",
             json=vapi_request("validate_field", {"field": "phone_number", "value": "123"}),
+            headers=VAPI_HEADERS,
+        )
+        result = resp.json()["results"][0]["result"]
+        assert result.startswith("WAIT:")
+        assert "3 of 10" in result
+
+    def test_empty_phone_invalid(self, client):
+        resp = client.post(
+            "/vapi/tools",
+            json=vapi_request("validate_field", {"field": "phone_number", "value": ""}),
+            headers=VAPI_HEADERS,
+        )
+        result = resp.json()["results"][0]["result"]
+        assert result.startswith("INVALID:")
+
+    def test_too_many_phone_digits_invalid(self, client):
+        resp = client.post(
+            "/vapi/tools",
+            json=vapi_request("validate_field", {"field": "phone_number", "value": "555123456789"}),
             headers=VAPI_HEADERS,
         )
         result = resp.json()["results"][0]["result"]
@@ -238,10 +257,19 @@ class TestLookupByPhoneTool:
         assert "Alice" in result
         assert "Smith" in result
 
-    def test_invalid_phone_format(self, client):
+    def test_partial_phone_waits(self, client):
         resp = client.post(
             "/vapi/tools",
             json=vapi_request("lookup_by_phone", {"phone_number": "999"}),
+            headers=VAPI_HEADERS,
+        )
+        result = resp.json()["results"][0]["result"]
+        assert result.startswith("WAIT:")
+
+    def test_invalid_phone_format(self, client):
+        resp = client.post(
+            "/vapi/tools",
+            json=vapi_request("lookup_by_phone", {"phone_number": "abc"}),
             headers=VAPI_HEADERS,
         )
         result = resp.json()["results"][0]["result"]
@@ -485,4 +513,4 @@ class TestMultipleToolCalls:
         assert results[0]["toolCallId"] == "tc-001"
         assert results[0]["result"] == "OK"
         assert results[1]["toolCallId"] == "tc-002"
-        assert results[1]["result"].startswith("INVALID:")
+        assert results[1]["result"].startswith("WAIT:")

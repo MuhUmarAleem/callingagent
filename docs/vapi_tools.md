@@ -45,7 +45,7 @@ Paste each block below into the Vapi dashboard under **Tools → Create Tool →
 ### Tool 1: `validate_field`
 
 **Description:**
-> Use this tool to validate a single patient registration field before asking for the next one. Call it immediately after the user provides any piece of information. If the result starts with "INVALID:", tell the user what's wrong and ask them to repeat that field. If the result is "OK", move on to the next field.
+> Use this tool to validate a single patient registration field before asking for the next one. Call it after the user has finished a field. For phone_number, do not call this until you have all 10 digits — people pause between groups of digits, so wait. If the result starts with "WAIT:", stay silent and keep listening. If the result starts with "INVALID:", tell the user what's wrong and ask them to repeat that field. If the result is "OK", move on to the next field.
 
 **Function name:** `validate_field`
 
@@ -69,6 +69,7 @@ Paste each block below into the Vapi dashboard under **Tools → Create Tool →
 
 **Example result strings:**
 - `OK`
+- `WAIT: only 3 of 10 digits so far. Stay completely silent...`
 - `INVALID: A U.S. phone number needs 10 digits.`
 - `INVALID: That date is in the future. Please provide your actual date of birth.`
 
@@ -189,6 +190,64 @@ Paste each block below into the Vapi dashboard under **Tools → Create Tool →
 
 ---
 
+## Stop interrupting phone numbers
+
+People pause between digit groups ("555" … "123" … "4567"). If the assistant talks during those pauses, the number is cut off.
+
+### Dashboard settings (required)
+
+In Vapi: **Assistants → your assistant → Advanced → Start Speaking Plan**. Publish after saving.
+
+| Setting | Value |
+|---|---|
+| Wait Seconds | `0.8` |
+| Smart Endpointing | **Off** (so number-wait rules apply) |
+| On Number Seconds | `3` |
+| On No Punctuation Seconds | `2` |
+| On Punctuation Seconds | `0.5` |
+
+Then add these **Custom Endpointing Rules** (they override the defaults when matched):
+
+1. **Assistant rule** — when you just asked for a phone number, wait longer:
+   - Type: `assistant`
+   - Regex: `(phone|mobile|cell)`
+   - Timeout seconds: `5`
+2. **Customer rule** — while the caller is saying digits, keep waiting:
+   - Type: `customer`
+   - Regex: `(\\d|one|two|three|four|five|six|seven|eight|nine|zero|oh)`
+   - Timeout seconds: `4`
+
+### JSON you can paste into the assistant config
+
+```json
+{
+  "startSpeakingPlan": {
+    "waitSeconds": 0.8,
+    "customEndpointingRules": [
+      {
+        "type": "assistant",
+        "regex": "(phone|mobile|cell)",
+        "timeoutSeconds": 5
+      },
+      {
+        "type": "customer",
+        "regex": "(\\d|one|two|three|four|five|six|seven|eight|nine|zero|oh)",
+        "timeoutSeconds": 4
+      }
+    ],
+    "transcriptionEndpointingPlan": {
+      "onPunctuationSeconds": 0.5,
+      "onNoPunctuationSeconds": 2.0,
+      "onNumberSeconds": 3.0
+    }
+  }
+}
+```
+
+Replace the assistant **System Prompt** with the version below so it stays quiet until all 10 digits are in.
+
+---
+
 ## Suggested System Prompt for the Vapi Assistant
 
 ```
@@ -209,4 +268,10 @@ WORKFLOW:
 7. If save_patient returns ERROR_FIELD, apologize and re-ask only that field.
 8. Speak naturally. Spell out phone numbers digit by digit. Say dates as "Month Day, Year".
 9. Never read UUIDs aloud.
+
+PHONE NUMBERS:
+- Ask once, then stay completely silent until the caller has said all 10 digits.
+- Callers pause between groups of digits. That pause is not the end. Do not interrupt.
+- Do not call validate_field or lookup_by_phone until you have 10 digits.
+- If a tool returns WAIT, stay silent and keep listening. Do not say the number is invalid.
 ```
