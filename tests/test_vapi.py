@@ -176,6 +176,24 @@ class TestValidateFieldTool:
         result = resp.json()["results"][0]["result"]
         assert "INVALID" in result
 
+    def test_top_level_name_and_parameters(self, client):
+        body = {
+            "message": {
+                "type": "tool-calls",
+                "call": {"id": "call-new-fmt"},
+                "toolCallList": [
+                    {
+                        "id": "tc-001",
+                        "name": "validate_field",
+                        "parameters": {"field": "first_name", "value": "Alice"},
+                    }
+                ],
+            }
+        }
+        resp = client.post("/vapi/tools", json=body, headers=VAPI_HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["results"][0]["result"] == "OK"
+
     def test_alt_format_json_string_args(self, client):
         """Test the variant where arguments arrive as a JSON string."""
         resp = client.post(

@@ -110,10 +110,16 @@ def _extract_tool_calls(message: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Both formats use id at the top level
         call_id = item.get("id", "")
 
-        # Function info can be at top level (older format) or nested under "function"
+        # Function info can be at top level or nested under "function"
         func = item.get("function", {})
         name = func.get("name") or item.get("name", "")
-        raw_args = func.get("arguments") or item.get("arguments", {})
+        raw_args = (
+            func.get("arguments")
+            or func.get("parameters")
+            or item.get("arguments")
+            or item.get("parameters")
+            or {}
+        )
         arguments = _parse_arguments(raw_args)
 
         normalized.append({"id": call_id, "name": name, "arguments": arguments})
