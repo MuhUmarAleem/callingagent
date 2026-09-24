@@ -6,14 +6,12 @@
     }
   },
   "rewrites": [
-    { "source": "/health", "destination": { "type": "service", "service": "callingagent" } },
-    { "source": "/patients", "destination": { "type": "service", "service": "callingagent" } },
-    { "source": "/patients/(.*)", "destination": { "type": "service", "service": "callingagent" } },
-    { "source": "/call-logs", "destination": { "type": "service", "service": "callingagent" } },
-    { "source": "/vapi/(.*)", "destination": { "type": "service", "service": "callingagent" } },
-    { "source": "/docs", "destination": { "type": "service", "service": "callingagent" } },
-    { "source": "/docs/(.*)", "destination": { "type": "service", "service": "callingagent" } },
-    { "source": "/redoc", "destination": { "type": "service", "service": "callingagent" } },
-    { "source": "/openapi.json", "destination": { "type": "service", "service": "callingagent" } }
+    {
+      "source": "/(.*)",
+      "destination": {
+        "type": "service",
+        "service": "callingagent"
+      }
+    }
   ]
 }
