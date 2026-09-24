@@ -84,10 +84,26 @@ def check_db_health() -> bool:
         return False
 
 
+def _schema_exists(conn) -> bool:
+    count = conn.execute(
+        text(
+            """
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name IN ('patients', 'call_logs')
+            """
+        )
+    ).scalar()
+    return int(count or 0) >= 2
+
+
 def init_schema() -> bool:
-    """Create patients/call_logs tables if they do not exist. Safe to call on every boot."""
+    """Create tables only when they are missing. Skip DDL on every serverless request."""
     try:
         engine, _ = _get_engine()
+        with engine.connect() as conn:
+            if _schema_exists(conn):
+                return True
         with engine.begin() as conn:
             for stmt in SCHEMA_STATEMENTS:
                 conn.execute(text(stmt))
