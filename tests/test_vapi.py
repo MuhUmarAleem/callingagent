@@ -65,6 +65,18 @@ def set_vapi_secret(monkeypatch):
     cfg.get_settings.cache_clear()
 
 
+class TestVapiGetProbe:
+    def test_tools_get_is_ok(self, client):
+        resp = client.get("/vapi/tools")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_webhook_get_is_ok(self, client):
+        resp = client.get("/vapi/webhook")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+
 class TestVapiAuth:
     def test_wrong_secret_rejected(self, client):
         resp = client.post(

@@ -309,6 +309,22 @@ def _dispatch_tool(name: str, args: Dict[str, Any], call_id: Optional[str]) -> s
 
 
 # ---------------------------------------------------------------------------
+# GET probes (browsers use GET; Vapi uses POST)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/tools")
+@router.get("/webhook")
+def vapi_get_probe(request: Request):
+    """Browsers hit these with GET. Vapi always uses POST."""
+    return {
+        "ok": True,
+        "path": request.url.path,
+        "message": "This URL is live. Vapi must POST here; opening it in a browser will not run a tool call.",
+    }
+
+
+# ---------------------------------------------------------------------------
 # POST /vapi/tools
 # ---------------------------------------------------------------------------
 
