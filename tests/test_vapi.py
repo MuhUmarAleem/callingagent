@@ -129,7 +129,7 @@ class TestValidateFieldTool:
         results = resp.json()["results"]
         assert len(results) == 1
         assert results[0]["toolCallId"] == "tc-001"
-        assert results[0]["result"] == "OK"
+        assert results[0]["result"].startswith("OK")
 
     def test_invalid_field_returns_invalid_prefix(self, client):
         resp = client.post(
@@ -156,7 +156,7 @@ class TestValidateFieldTool:
             json=vapi_request("validate_field", {"field": "phone_number", "value": "5551234567"}),
             headers=VAPI_HEADERS,
         )
-        assert resp.json()["results"][0]["result"] == "OK"
+        assert resp.json()["results"][0]["result"].startswith("OK")
 
     def test_partial_phone_waits(self, client):
         resp = client.post(
@@ -211,7 +211,7 @@ class TestValidateFieldTool:
         }
         resp = client.post("/vapi/tools", json=body, headers=VAPI_HEADERS)
         assert resp.status_code == 200
-        assert resp.json()["results"][0]["result"] == "OK"
+        assert resp.json()["results"][0]["result"].startswith("OK")
 
     def test_alt_format_json_string_args(self, client):
         """Test the variant where arguments arrive as a JSON string."""
@@ -221,7 +221,7 @@ class TestValidateFieldTool:
             headers=VAPI_HEADERS,
         )
         assert resp.status_code == 200
-        assert resp.json()["results"][0]["result"] == "OK"
+        assert resp.json()["results"][0]["result"].startswith("OK")
 
 
 class TestLookupByPhoneTool:
@@ -511,7 +511,7 @@ class TestMultipleToolCalls:
         results = resp.json()["results"]
         assert len(results) == 2
         assert results[0]["toolCallId"] == "tc-001"
-        assert results[0]["result"] == "OK"
+        assert results[0]["result"].startswith("OK")
         assert results[1]["toolCallId"] == "tc-002"
         assert results[1]["result"].startswith("WAIT:")
 
@@ -540,11 +540,33 @@ class TestBundledToolFormat:
         }
         resp = client.post("/vapi/tools", json=body, headers=VAPI_HEADERS)
         assert resp.status_code == 200
-        assert resp.json()["results"][0]["result"] == "OK"
+        assert resp.json()["results"][0]["result"].startswith("OK")
         assert resp.json()["results"][0]["toolCallId"] == "toolu_abc"
 
 
 class TestDraftAutoSave:
+    def test_name_and_dob_create_patient(self, client):
+        call_id = "call-name-dob"
+        client.post(
+            "/vapi/tools",
+            json=vapi_request("validate_field", {"field": "name", "value": "Maya Chen"}, call_id=call_id),
+            headers=VAPI_HEADERS,
+        )
+        resp = client.post(
+            "/vapi/tools",
+            json=vapi_request("validate_field", {"field": "dob", "value": "03/22/1992"}, call_id=call_id),
+            headers=VAPI_HEADERS,
+        )
+        result = resp.json()["results"][0]["result"]
+        assert result.startswith("OK")
+        assert "SUCCESS" in result
+        assert "Ask for their sex" in result
+        saved = [p for p in store.list_all() if p["first_name"] == "Maya"]
+        assert len(saved) == 1
+        assert saved[0]["last_name"] == "Chen"
+        assert saved[0]["sex"] == "Decline to Answer"
+        assert saved[0]["phone_number"].startswith("555")
+
     def test_core_fields_create_patient(self, client):
         call_id = "call-autosave"
         fields = [

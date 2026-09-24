@@ -24,13 +24,14 @@ Vapi request format (tool-calls):
 Response (always HTTP 200):
   {"results": [{"toolCallId": "...", "result": "<single-line string>"}]}
 """
+import hashlib
 import hmac
 import json
 import logging
 import re
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
@@ -234,12 +235,31 @@ def _wait_for_full_phone(value: Any) -> Optional[str]:
     return None
 
 
-CORE_VOICE_FIELDS = ("first_name", "last_name", "date_of_birth", "sex", "phone_number")
+MIN_VOICE_FIELDS = ("first_name", "date_of_birth")
 VOICE_DEFAULTS = {
     "address_line_1": "Not provided",
     "city": "Unknown",
     "state": "NA",
     "zip_code": "00000",
+}
+FIELD_ALIASES = {
+    "dob": "date_of_birth",
+    "birthday": "date_of_birth",
+    "birthdate": "date_of_birth",
+    "birth_date": "date_of_birth",
+    "gender": "sex",
+}
+NAME_FIELDS = {"name", "full_name", "fullname", "patient_name"}
+NEXT_QUESTION = {
+    "first_name": "Ask for their last name next. Do not end the call.",
+    "last_name": "Ask for their date of birth next as month, day, year. Do not end the call.",
+    "date_of_birth": "Ask for their sex next: male, female, other, or decline. Do not end the call.",
+    "sex": "Ask for their 10-digit phone number next. Wait for all 10 digits. Do not end the call.",
+    "phone_number": "Ask for street address, city, state, and ZIP, then call save_patient. Do not end the call.",
+    "address_line_1": "Ask for city, state, and ZIP, then call save_patient.",
+    "city": "Ask for state and ZIP, then call save_patient.",
+    "state": "Ask for ZIP, then call save_patient.",
+    "zip_code": "Call save_patient now with every field you have.",
 }
 
 
@@ -247,6 +267,49 @@ def _jsonable(value: Any) -> Any:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return value
+
+
+def _placeholder_phone(call_id: Optional[str]) -> str:
+    seed = call_id or uuid.uuid4().hex
+    n = int(hashlib.sha256(seed.encode()).hexdigest()[:12], 16)
+    return f"555{n % 10_000_000:07d}"
+
+
+def _split_person_name(value: Any) -> Dict[str, str]:
+    parts = str(value or "").strip().split()
+    if not parts:
+        return {}
+    if len(parts) == 1:
+        return {"first_name": parts[0], "last_name": "Unknown"}
+    return {"first_name": parts[0], "last_name": " ".join(parts[1:])}
+
+
+def _canonical_fields(field: str, value: Any) -> Tuple[str, Dict[str, Any]]:
+    key = (field or "").strip().lower()
+    if key in NAME_FIELDS or (
+        key == "first_name" and isinstance(value, str) and len(str(value).strip().split()) > 1
+    ):
+        parts = _split_person_name(value)
+        prompt = "last_name" if parts.get("last_name") and parts["last_name"] != "Unknown" else "first_name"
+        return prompt, parts
+    canonical = FIELD_ALIASES.get(key, key)
+    return canonical, {canonical: value}
+
+
+def _next_question(field: str) -> str:
+    return NEXT_QUESTION.get(field, "Ask the next required field. Do not end the call.")
+
+
+def _voice_payload(draft: Dict[str, Any], call_id: Optional[str]) -> Dict[str, Any]:
+    real = {k: v for k, v in draft.items() if v not in (None, "") and not str(k).startswith("_")}
+    payload = {**VOICE_DEFAULTS, **real}
+    if not payload.get("last_name"):
+        payload["last_name"] = "Unknown"
+    if not payload.get("sex"):
+        payload["sex"] = "Decline to Answer"
+    if not payload.get("phone_number"):
+        payload["phone_number"] = _placeholder_phone(call_id)
+    return payload
 
 
 def _persist_clean_patient(db, clean: Dict[str, Any], call_id: Optional[str]) -> str:
@@ -285,20 +348,33 @@ def _persist_clean_patient(db, clean: Dict[str, Any], call_id: Optional[str]) ->
 
 
 def _try_finalize_draft(call_id: Optional[str]) -> Optional[str]:
-    """Save a patient once the call has name, DOB, sex, and phone."""
+    """Save as soon as the call has a name and date of birth."""
     if not call_id:
         return None
     with get_db() as db:
         draft = get_call_draft(db, call_id)
-        if not all(draft.get(field) for field in CORE_VOICE_FIELDS):
+        if not all(draft.get(field) for field in MIN_VOICE_FIELDS):
             return None
-        payload = {**VOICE_DEFAULTS, **{k: v for k, v in draft.items() if v not in (None, "")}}
+        payload = _voice_payload(draft, call_id)
         clean, errors = validate_patient(payload)
         if errors:
             logger.info("draft incomplete call_id=%s missing=%s", call_id, list(errors.keys()))
             return None
         try:
-            return _persist_clean_patient(db, clean, call_id)
+            existing_id = draft.get("_patient_id")
+            if existing_id:
+                if "phone_number" in clean:
+                    conflict = phone_exists_for_different_patient(db, clean["phone_number"], str(existing_id))
+                    if conflict:
+                        return None
+                updated = update_patient(db, str(existing_id), clean)
+                if updated:
+                    return f"SUCCESS: updated. patient_id={existing_id}; first_name={updated.get('first_name')}"
+            result = _persist_clean_patient(db, clean, call_id)
+            if result.startswith("SUCCESS") and "patient_id=" in result:
+                pid = result.split("patient_id=", 1)[1].split(";", 1)[0].strip()
+                merge_call_draft(db, call_id, {"_patient_id": pid})
+            return result
         except Exception as exc:
             logger.error("finalize draft failed call_id=%s: %s", call_id, exc)
             return None
@@ -320,22 +396,26 @@ def _tool_validate_field(args: Dict[str, Any], call_id: Optional[str] = None) ->
     if not field:
         return "INVALID: Please provide a field name."
 
-    if field in ("phone_number", "emergency_contact_phone"):
+    prompt_field, pending = _canonical_fields(field, value)
+    if prompt_field in ("phone_number", "emergency_contact_phone"):
         waiting = _wait_for_full_phone(value)
         if waiting:
             return waiting
 
+    remembered: Dict[str, Any] = {}
     try:
-        normalized = validate_field(field, value)
+        for name, raw in pending.items():
+            remembered[name] = validate_field(name, raw)
     except KeyError:
         return f"INVALID: I don't know the field '{field}'."
     except ValueError as e:
         return f"INVALID: {e}"
 
-    saved = _remember_fields(call_id, {field: normalized})
+    saved = _remember_fields(call_id, remembered)
+    next_q = _next_question(prompt_field)
     if saved and saved.startswith("SUCCESS"):
-        return f"OK. {saved}"
-    return "OK"
+        return f"OK. {saved} {next_q}"
+    return f"OK. {next_q}"
 
 
 def _tool_lookup_by_phone(args: Dict[str, Any]) -> str:
